@@ -46,11 +46,14 @@ export class BaseWidget extends Widget {
     readonly onScrollUp: Event<void> = this.onScrollUpEmitter.event;
     protected readonly onDidChangeVisibilityEmitter = new Emitter<boolean>();
     readonly onDidChangeVisibility = this.onDidChangeVisibilityEmitter.event;
+    protected readonly onDidDisposeEmitter = new Emitter<void>();
+    readonly onDidDispose = this.onDidDisposeEmitter.event;
 
     protected readonly toDispose = new DisposableCollection(
         this.onScrollYReachEndEmitter,
         this.onScrollUpEmitter,
-        this.onDidChangeVisibilityEmitter
+        this.onDidChangeVisibilityEmitter,
+        this.onDidDisposeEmitter
     );
     protected readonly toDisposeOnDetach = new DisposableCollection();
     protected scrollBar?: PerfectScrollbar;
@@ -60,6 +63,7 @@ export class BaseWidget extends Widget {
         if (this.isDisposed) {
             return;
         }
+        this.onDidDisposeEmitter.fire();
         super.dispose();
         this.toDispose.dispose();
     }

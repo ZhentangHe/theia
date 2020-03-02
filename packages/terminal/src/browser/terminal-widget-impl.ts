@@ -47,8 +47,9 @@ export interface TerminalWidgetFactoryOptions extends Partial<TerminalWidgetOpti
 export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget {
 
     private readonly TERMINAL = 'Terminal';
+    protected terminalKind = 'user';
+    protected termId = -1;
     protected readonly onTermDidClose = new Emitter<TerminalWidget>();
-    protected terminalId = -1;
     protected fitAddon: FitAddon;
     protected term: Terminal;
     protected searchBox: TerminalSearchWidget;
@@ -74,14 +75,19 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
 
     protected readonly onDidOpenEmitter = new Emitter<void>();
     readonly onDidOpen: Event<void> = this.onDidOpenEmitter.event;
+    protected readonly onTerminalDidConnectProcessEmitter = new Emitter<TerminalWidget>();
+    readonly onTerminalDidConnectProcess: Event<TerminalWidget> = this.onTerminalDidConnectProcessEmitter.event;
 
     protected readonly toDisposeOnConnect = new DisposableCollection();
 
     @postConstruct()
     protected init(): void {
-        this.title.caption = this.options.title || this.TERMINAL;
-        this.title.label = this.options.title || this.TERMINAL;
+        this.setTitle(this.options.title || this.TERMINAL);
         this.title.iconClass = 'fa fa-terminal';
+
+        if (this.options.kind) {
+            this.terminalKind = this.options.kind;
+        }
 
         if (this.options.destroyTermOnClose === true) {
             this.toDispose.push(Disposable.create(() =>
@@ -166,7 +172,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         this.toDispose.push(titleChangeListenerDispose);
 
         this.toDispose.push(this.terminalWatcher.onTerminalError(({ terminalId, error }) => {
-            if (terminalId === this.terminalId) {
+            if (terminalId === this.termId) {
                 this.dispose();
                 this.onTermDidClose.fire(this);
                 this.onTermDidClose.dispose();
@@ -174,7 +180,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
             }
         }));
         this.toDispose.push(this.terminalWatcher.onTerminalExit(({ terminalId }) => {
-            if (terminalId === this.terminalId) {
+            if (terminalId === this.termId) {
                 this.dispose();
                 this.onTermDidClose.fire(this);
                 this.onTermDidClose.dispose();
@@ -190,6 +196,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         }));
         this.toDispose.push(this.onTermDidClose);
         this.toDispose.push(this.onDidOpenEmitter);
+        this.toDispose.push(this.onTerminalDidConnectProcessEmitter);
 
         const touchEndListener = (event: TouchEvent) => {
             if (this.node.contains(event.target as Node)) {
@@ -213,6 +220,10 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
 
         this.searchBox = this.terminalSearchBoxFactory(this.term);
         this.toDispose.push(this.searchBox);
+    }
+
+    get kind(): 'user' | string {
+        return this.terminalKind;
     }
 
     /**
@@ -256,21 +267,25 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     }
 
     get cwd(): Promise<URI> {
-        if (!IBaseTerminalServer.validateId(this.terminalId)) {
+        if (!IBaseTerminalServer.validateId(this.termId)) {
             return Promise.reject(new Error('terminal is not started'));
         }
         if (this.terminalService.getById(this.id)) {
-            return this.shellTerminalServer.getCwdURI(this.terminalId)
+            return this.shellTerminalServer.getCwdURI(this.termId)
                 .then(cwdUrl => new URI(cwdUrl));
         }
         return Promise.resolve(new URI());
     }
 
     get processId(): Promise<number> {
-        if (!IBaseTerminalServer.validateId(this.terminalId)) {
+        if (!IBaseTerminalServer.validateId(this.termId)) {
             return Promise.reject(new Error('terminal is not started'));
         }
-        return this.shellTerminalServer.getProcessId(this.terminalId);
+        return this.shellTerminalServer.getProcessId(this.termId);
+    }
+
+    get terminalId(): number {
+        return this.termId;
     }
 
     get lastTouchEndEvent(): TouchEvent | undefined {
@@ -291,7 +306,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
 
     storeState(): object {
         this.closeOnDispose = false;
-        return { terminalId: this.terminalId, titleLabel: this.title.label };
+        return { terminalId: this.termId, titleLabel: this.title.label };
     }
 
     restoreState(oldState: object): void {
@@ -310,12 +325,12 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
      * If id is provided attach to the terminal for this id.
      */
     async start(id?: number): Promise<number> {
-        this.terminalId = typeof id !== 'number' ? await this.createTerminal() : await this.attachTerminal(id);
+        this.termId = typeof id !== 'number' ? await this.createTerminal() : await this.attachTerminal(id);
         this.resizeTerminalProcess();
         this.connectTerminalProcess();
-        if (IBaseTerminalServer.validateId(this.terminalId)) {
+        if (IBaseTerminalServer.validateId(this.termId)) {
             this.onDidOpenEmitter.fire(undefined);
-            return this.terminalId;
+            return this.termId;
         }
         throw new Error('Failed to start terminal' + (id ? ` for id: ${id}.` : '.'));
     }
@@ -325,6 +340,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         if (IBaseTerminalServer.validateId(terminalId)) {
             return terminalId;
         }
+        this.terminalKind = 'user';
         this.logger.error(`Error attaching to terminal id ${id}, the terminal is most likely gone. Starting up a new terminal instead.`);
         return this.createTerminal();
     }
@@ -406,15 +422,14 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     protected readonly deviceStatusCodes = new Set(['\u001B[>0;276;0c', '\u001B[>85;95;0c', '\u001B[>83;40003;0c', '\u001B[?1;2c', '\u001B[?6c']);
 
     protected connectTerminalProcess(): void {
-        if (typeof this.terminalId !== 'number') {
+        if (typeof this.termId !== 'number') {
             return;
         }
         this.toDisposeOnConnect.dispose();
         this.toDispose.push(this.toDisposeOnConnect);
-        this.term.reset();
         const waitForConnection = this.waitForConnection = new Deferred<MessageConnection>();
         this.webSocketConnectionProvider.listen({
-            path: `${terminalsPath}/${this.terminalId}`,
+            path: `${terminalsPath}/${this.termId}`,
             onConnection: connection => {
                 connection.onNotification('onData', (data: string) => this.write(data));
 
@@ -431,14 +446,15 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
                 this.toDisposeOnConnect.push(connection);
                 connection.listen();
                 if (waitForConnection) {
+                    this.onTerminalDidConnectProcessEmitter.fire(this);
                     waitForConnection.resolve(connection);
                 }
             }
         }, { reconnecting: false });
     }
     protected async reconnectTerminalProcess(): Promise<void> {
-        if (typeof this.terminalId === 'number') {
-            await this.start(this.terminalId);
+        if (typeof this.termId === 'number') {
+            await this.start(this.termId);
         }
     }
 
@@ -490,12 +506,24 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         this.term.scrollToTop();
     }
 
+    scrollToBottom(): void {
+        this.term.scrollToBottom();
+    }
+
     scrollPageUp(): void {
         this.term.scrollPages(-1);
     }
 
     scrollPageDown(): void {
         this.term.scrollPages(1);
+    }
+
+    resetTerminal(): void {
+        this.term.reset();
+    }
+
+    writeLine(text: string): void {
+        this.term.writeln(text);
     }
 
     get onTerminalDidClose(): Event<TerminalWidget> {
@@ -505,10 +533,9 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     dispose(): void {
         /* Close the backend terminal only when explicitly closing the terminal
          * a refresh for example won't close it.  */
-        if (this.closeOnDispose === true && typeof this.terminalId === 'number') {
-            this.shellTerminalServer.close(this.terminalId);
+        if (this.closeOnDispose === true && typeof this.termId === 'number') {
+            this.shellTerminalServer.close(this.termId);
             this.onTermDidClose.fire(this);
-            this.onTermDidClose.dispose();
         }
         super.dispose();
     }
@@ -521,12 +548,12 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     }
 
     protected resizeTerminalProcess(): void {
-        if (!IBaseTerminalServer.validateId(this.terminalId)
+        if (!IBaseTerminalServer.validateId(this.termId)
             && !this.terminalService.getById(this.id)) {
             return;
         }
         const { cols, rows } = this.term;
-        this.shellTerminalServer.resize(this.terminalId, cols, rows);
+        this.shellTerminalServer.resize(this.termId, cols, rows);
     }
 
     protected get enableCopy(): boolean {
@@ -558,4 +585,8 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         this.term.attachCustomKeyEventHandler(e => this.customKeyHandler(e));
     }
 
+    setTitle(title: string): void {
+        this.title.caption = title;
+        this.title.label = title;
+    }
 }
