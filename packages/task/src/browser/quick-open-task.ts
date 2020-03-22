@@ -619,15 +619,31 @@ export class TaskConfigureQuickOpenItem extends QuickOpenGroupItem {
 @injectable()
 export class TaskTerminateQuickOpen implements QuickOpenModel {
 
+    @inject(LabelProvider)
+    protected readonly labelProvider: LabelProvider;
+
     @inject(QuickOpenService)
     protected readonly quickOpenService: QuickOpenService;
+
+    @inject(TaskDefinitionRegistry)
+    protected readonly taskDefinitionRegistry: TaskDefinitionRegistry;
+
+    @inject(TaskNameResolver)
+    protected readonly taskNameResolver: TaskNameResolver;
+
+    @inject(TaskSourceResolver)
+    protected readonly taskSourceResolver: TaskSourceResolver;
 
     @inject(TaskService)
     protected readonly taskService: TaskService;
 
+    @inject(WorkspaceService)
+    protected readonly workspaceService: WorkspaceService;
+
     async onType(_lookFor: string, acceptor: (items: QuickOpenItem[]) => void): Promise<void> {
         const items: QuickOpenItem[] = [];
         const runningTasks: TaskInfo[] = await this.taskService.getRunningTasks();
+        const isMulti: boolean = this.workspaceService.isMultiRootWorkspaceOpened;
         if (runningTasks.length <= 0) {
             items.push(new QuickOpenItem({
                 label: 'No task is currently running',
@@ -635,16 +651,24 @@ export class TaskTerminateQuickOpen implements QuickOpenModel {
             }));
         } else {
             runningTasks.forEach((task: TaskInfo) => {
-                items.push(new QuickOpenItem({
-                    label: task.config.label,
-                    run: (mode: QuickOpenMode): boolean => {
-                        if (mode !== QuickOpenMode.OPEN) {
-                            return false;
+                items.push(new RunningTaskQuickOpenItem(
+                    task,
+                    this.taskService,
+                    this.taskNameResolver,
+                    this.taskSourceResolver,
+                    this.taskDefinitionRegistry,
+                    this.labelProvider,
+                    isMulti,
+                    {
+                        run: (mode: QuickOpenMode): boolean => {
+                            if (mode !== QuickOpenMode.OPEN) {
+                                return false;
+                            }
+                            this.taskService.kill(task.taskId);
+                            return true;
                         }
-                        this.taskService.kill(task.taskId);
-                        return true;
-                    }
-                }));
+                    },
+                ));
             });
             if (runningTasks.length > 1) {
                 items.push(new QuickOpenItem({
@@ -677,11 +701,26 @@ export class TaskTerminateQuickOpen implements QuickOpenModel {
 @injectable()
 export class TaskRunningQuickOpen implements QuickOpenModel {
 
+    @inject(LabelProvider)
+    protected readonly labelProvider: LabelProvider;
+
     @inject(QuickOpenService)
     protected readonly quickOpenService: QuickOpenService;
 
+    @inject(TaskDefinitionRegistry)
+    protected readonly taskDefinitionRegistry: TaskDefinitionRegistry;
+
+    @inject(TaskNameResolver)
+    protected readonly taskNameResolver: TaskNameResolver;
+
+    @inject(TaskSourceResolver)
+    protected readonly taskSourceResolver: TaskSourceResolver;
+
     @inject(TaskService)
     protected readonly taskService: TaskService;
+
+    @inject(WorkspaceService)
+    protected readonly workspaceService: WorkspaceService;
 
     @inject(TerminalService)
     protected readonly terminalService: TerminalService;
@@ -689,6 +728,7 @@ export class TaskRunningQuickOpen implements QuickOpenModel {
     async onType(_lookFor: string, acceptor: (items: QuickOpenItem[]) => void): Promise<void> {
         const items: QuickOpenItem[] = [];
         const runningTasks: TaskInfo[] = await this.taskService.getRunningTasks();
+        const isMulti: boolean = this.workspaceService.isMultiRootWorkspaceOpened;
         if (runningTasks.length <= 0) {
             items.push(new QuickOpenItem({
                 label: 'No task is currently running',
@@ -696,21 +736,29 @@ export class TaskRunningQuickOpen implements QuickOpenModel {
             }));
         } else {
             runningTasks.forEach((task: TaskInfo) => {
-                items.push(new QuickOpenItem({
-                    label: task.config.label,
-                    run: (mode: QuickOpenMode): boolean => {
-                        if (mode !== QuickOpenMode.OPEN) {
-                            return false;
-                        }
-                        if (task.terminalId) {
-                            const terminal = this.terminalService.getById('terminal-' + task.terminalId);
-                            if (terminal) {
-                                this.terminalService.open(terminal);
+                items.push(new RunningTaskQuickOpenItem(
+                    task,
+                    this.taskService,
+                    this.taskNameResolver,
+                    this.taskSourceResolver,
+                    this.taskDefinitionRegistry,
+                    this.labelProvider,
+                    isMulti,
+                    {
+                        run: (mode: QuickOpenMode): boolean => {
+                            if (mode !== QuickOpenMode.OPEN) {
+                                return false;
                             }
+                            if (task.terminalId) {
+                                const terminal = this.terminalService.getById('terminal-' + task.terminalId);
+                                if (terminal) {
+                                    this.terminalService.open(terminal);
+                                }
+                            }
+                            return true;
                         }
-                        return true;
-                    }
-                }));
+                    },
+                ));
             });
         }
         acceptor(items);
@@ -725,7 +773,7 @@ export class TaskRunningQuickOpen implements QuickOpenModel {
     }
 }
 
-export class TaskRestartRunningQuickOpenItem extends QuickOpenItem {
+export class RunningTaskQuickOpenItem extends QuickOpenItem {
 
     constructor(
         protected readonly taskInfo: TaskInfo,
@@ -753,11 +801,10 @@ export class TaskRestartRunningQuickOpenItem extends QuickOpenItem {
     }
 
     run(mode: QuickOpenMode): boolean {
-        if (mode !== QuickOpenMode.OPEN) {
+        if (mode !== QuickOpenMode.OPEN || !this.options.run) {
             return false;
         }
-        this.taskService.restartTask(this.taskInfo);
-        return true;
+        return this.options.run(mode);
     }
 }
 
@@ -796,7 +843,7 @@ export class TaskRestartRunningQuickOpen implements QuickOpenModel {
             }));
         } else {
             runningTasks.forEach((task: TaskInfo) => {
-                items.push(new TaskRestartRunningQuickOpenItem(
+                items.push(new RunningTaskQuickOpenItem(
                     task,
                     this.taskService,
                     this.taskNameResolver,
@@ -804,7 +851,15 @@ export class TaskRestartRunningQuickOpen implements QuickOpenModel {
                     this.taskDefinitionRegistry,
                     this.labelProvider,
                     isMulti,
-                    {},
+                    {
+                        run: (mode: QuickOpenMode): boolean => {
+                            if (mode !== QuickOpenMode.OPEN) {
+                                return false;
+                            }
+                            this.taskService.restartTask(task);
+                            return true;
+                        }
+                    },
                 ));
             });
         }
